@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell *)",
+      "Bash(mkdir -p /tmp/svg)",
+      "Read(//c/Users/USER/AppData/Local/Temp/**)",
+      "Bash(docker restart biletix-connect *)",
+      "Bash(curl -sS -X POST -H \"Content-Type: application/json\" --data @connectors/debezium-postgres.json http://localhost:8085/connectors -w \"\\\\nHTTP %{http_code}\\\\n\")",
+      "Bash(curl -sS -X POST -H \"Content-Type: application/json\" --data @connectors/elasticsearch-sink.json http://localhost:8085/connectors -w \"\\\\nHTTP %{http_code}\\\\n\")",
+      "Bash(curl -sS http://localhost:8085/connectors/biletix-source/status)",
+      "Bash(curl -sS http://localhost:8085/connectors/biletix-es-sink/status)",
+      "Bash(curl -sS \"http://localhost:9200/_cat/indices?v\")"
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "mappings": {
+    "properties": {
+      "id":             { "type": "keyword" },
+      "title":          { "type": "text" },
+      "performer_name": { "type": "text" },
+      "venue_name":     { "type": "text" },
+      "city":           { "type": "text" },
+      "starts_at":      { "type": "date" },
+      "total_tickets":  { "type": "integer" }
+    }
+  }
+}
