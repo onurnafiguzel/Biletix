@@ -4,6 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Biletix is a Ticketmaster-style ticketing system built as a **modular monolith** (ASP.NET Core 8). The README is in Turkish; this file summarizes the architecture-critical parts.
 
+## Code conventions (project rules — apply when writing/modifying C#)
+
+- **SOLID + design patterns, fully applied.** Every type single-responsibility; depend on abstractions, not concretions (extend the existing `IEventsModule` interface-boundary style). Use the appropriate Gang-of-Four / enterprise pattern (Strategy, Factory, Adapter, Decorator, Repository, etc.) when it clarifies intent instead of hand-rolling ad-hoc branching. Prefer composition over inheritance.
+- **Primary constructors (C# 12).** Use primary constructors for dependency injection and simple field initialization rather than an explicit constructor + backing fields — e.g. `internal class EventsModule(AppDbContext db) : IEventsModule`. (`.NET 8` supports C# 12.)
+- **Readable, OOP-first code.** Intention-revealing names, small cohesive methods, real encapsulation (no anemic public mutable state). Code should read top-to-bottom like prose; match the surrounding file's style.
+
 ## Commands
 
 All runtime services are orchestrated by Docker Compose under `build/`.
