@@ -47,6 +47,10 @@ return n
     /// </summary>
     public async Task<bool> TryAcquireAllAsync(IEnumerable<Guid> ticketIds, Guid bookingId)
     {
+        // Advisory fast-path: if Redis is unreachable, don't block the booking — defer to the
+        // authoritative DB gate (return "no objection") instead of paying a connect timeout per call.
+        if (!_redis.IsConnected) return true;
+
         var db = _redis.GetDatabase();
         var keys = ticketIds.Select(id => (RedisKey)$"ticket:{id}").ToArray();
         if (keys.Length == 0) return true;
@@ -61,6 +65,8 @@ return n
 
     public async Task ReleaseAsync(IEnumerable<Guid> ticketIds, Guid bookingId)
     {
+        if (!_redis.IsConnected) return;
+
         var db = _redis.GetDatabase();
         var keys = ticketIds.Select(id => (RedisKey)$"ticket:{id}").ToArray();
         if (keys.Length == 0) return;

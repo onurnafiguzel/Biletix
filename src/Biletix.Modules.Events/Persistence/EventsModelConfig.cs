@@ -32,6 +32,7 @@ internal class TicketConfig : IEntityTypeConfiguration<Ticket>
     {
         b.ToTable("tickets");
         b.HasIndex(x => new { x.EventId, x.Status });
+        b.HasIndex(x => new { x.Status, x.ReservedUntil });
         b.Property(x => x.Status).HasConversion<string>();
     }
 }

@@ -39,13 +39,16 @@ Service ports (host): API **8080**, Postgres 5432, Redis 6379, Kafka 9092, Kafka
 
 The system deliberately splits into a **CP path** (buying tickets) and an **AP path** (search), each with its own correctness trade-off. Understanding these two is the key to the codebase.
 
-### 1. Overselling protection (CP path) — Redis, not DB locks
+### 1. Overselling protection (CP path) — DB-authoritative, Redis advisory
 
-The concurrency barrier lives **outside the database**, in Redis. `TicketLockService` (`src/Biletix.Modules.Bookings/Services/TicketLockService.cs`) runs a **single atomic Lua script** that checks all `ticket:{id}` keys with `EXISTS` then `SET ... PX` (120s TTL) — all-or-nothing, no partial-lock state, no rollback path. This is the only overselling boundary; `SELECT ... FOR UPDATE`-style DB row locks are intentionally not used.
+The authoritative oversell guard is an **atomic compare-and-set on `tickets.status`** in Postgres (EF Core `ExecuteUpdateAsync`), owned by the Events module. Redis (`TicketLockService`, `src/Biletix.Modules.Bookings/Services/TicketLockService.cs`) is only an **advisory fast-path** that fails fast under contention — a Redis outage is swallowed and the flow still relies on the DB. So oversell is impossible even if Redis is down or wrong.
 
-The booking flow in `src/Biletix.Modules.Bookings/BookingsEndpoints.cs` (`POST /bookings/{eventId}`) is: validate (status check → 409) → `TryAcquireAllAsync` (lock → 409 if taken) → payment (release lock + 402 on failure) → **one DB transaction** that does `bookings` INSERT + `tickets` UPDATE.
+The flow in `src/Biletix.Modules.Bookings/BookingsEndpoints.cs` (`POST /bookings/{eventId}`) is **Reserve → Pay → Confirm**:
+1. **Reserve (tx1):** `IEventsModule.TryReserveTicketsAsync` CAS `Available → Reserved` (also reclaims an expired `Reserved` hold). Wrapped in a transaction; if affected rows ≠ requested, roll back → 409 *before any charge*.
+2. **Pay:** `IPaymentGateway.ChargeAsync`; on failure release the hold → 402.
+3. **Confirm (tx2):** `TryConfirmTicketsAsync` CAS `Reserved → Booked` (only for this `bookingId`) + `bookings` INSERT, in one transaction. If the hold was lost during payment, roll back + `RefundAsync` + release → 409.
 
-**Non-obvious detail:** the cross-module call `IEventsModule.MarkTicketsBookedAsync` (`src/Biletix.Modules.Events/EventsModule.cs`) intentionally does **not** call `SaveChanges`. It only mutates tracked entities; the *endpoint* owns `SaveChangesAsync` + `tx.CommitAsync`. So booking + ticket update land in one transaction / one WAL change-set. Do not add a `SaveChanges` inside the module method.
+**Key points:** ticket-state transitions are atomic `ExecuteUpdateAsync` CAS in `EventsModule` (`src/Biletix.Modules.Events/EventsModule.cs`) — they bypass the change tracker but run in the caller's ambient transaction. Holds carry `ReservedBy` + `ReservedUntil`; expired holds self-heal (reclaimed by the next reserve) and are also swept by `ReservationSweeper` (a `BackgroundService`). The post-charge crash window (guaranteed refund) is out of scope here — see BILETIX-7 in `JIRA.md`.
 
 ### 2. Search sync (AP path) — Postgres CDC, fully automatic
 
@@ -76,7 +79,7 @@ Single host `Biletix.Api`, single `AppDbContext`, single Postgres. Three modules
 ## Gotchas
 
 - **`appsettings.json` uses Docker-network hostnames** (`postgres`, `redis`, `elasticsearch`). To run the API outside Docker, override the connection strings to `localhost`.
-- **Enum JSON serialization is numeric.** `TicketStatus` serializes as integers in API responses (`0`=Available, `1`=Reserved, `2`=Booked), not strings — relevant when scripting against the API. `Reserved` exists in the enum but is unused (the flow goes `Available → Booked` directly).
+- **Enum JSON serialization is numeric.** `TicketStatus` serializes as integers in API responses (`0`=Available, `1`=Reserved, `2`=Booked), not strings — relevant when scripting against the API. All three states are used: the booking flow holds tickets as `Reserved` between reserve and confirm.
 - **ksqlDB output topic must stay named `events`** (equals the ES index name); renaming it breaks the sink.
 - Single-broker Kafka requires `transaction.state.log.replication.factor=1` (already set in `build/docker-compose.yml`) or ksqlDB times out.
-- After a successful booking the Redis lock is **not** explicitly released; it expires via TTL (the DB row is already `Booked`, so the status check rejects retries in the meantime).
+- The Redis lock is advisory only and is released best-effort on every terminal path (and would expire via its 120s TTL anyway). Correctness never depends on it — the DB CAS is the gate.

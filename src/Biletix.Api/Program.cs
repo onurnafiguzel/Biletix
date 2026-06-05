@@ -20,7 +20,11 @@ builder.Services.AddDbContext<AppDbContext>(o =>
         npg => npg.MigrationsAssembly("Biletix.Api")));
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
-    ConnectionMultiplexer.Connect(builder.Configuration["Redis:ConnectionString"] ?? "redis:6379"));
+{
+    var options = ConfigurationOptions.Parse(builder.Configuration["Redis:ConnectionString"] ?? "redis:6379");
+    options.AbortOnConnectFail = false;
+    return ConnectionMultiplexer.Connect(options);
+});
 
 builder.Services
     .AddEventsModule()

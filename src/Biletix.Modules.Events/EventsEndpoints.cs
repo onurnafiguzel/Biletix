@@ -1,4 +1,5 @@
 using Biletix.Modules.Events.Domain;
+using Biletix.Modules.Events.Services;
 using Biletix.Shared.Contracts;
 using Biletix.Shared.Persistence;
 using Microsoft.AspNetCore.Builder;
@@ -14,6 +15,7 @@ public static class EventsEndpoints
     public static IServiceCollection AddEventsModule(this IServiceCollection services)
     {
         services.AddScoped<IEventsModule, EventsModule>();
+        services.AddHostedService<ReservationSweeper>();
         return services;
     }
 

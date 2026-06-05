@@ -2,13 +2,17 @@ using Biletix.Modules.Events.Domain;
 
 namespace Biletix.Modules.Events;
 
-/// <summary>
-/// Public contract that other modules (Bookings) may call. Within a single
-/// AppDbContext transaction; no integration events needed.
-/// </summary>
 public interface IEventsModule
 {
     Task<Event?> GetWithTicketsAsync(Guid eventId, CancellationToken ct = default);
     Task<IReadOnlyList<Ticket>> GetTicketsAsync(IEnumerable<Guid> ticketIds, CancellationToken ct = default);
-    Task MarkTicketsBookedAsync(IEnumerable<Guid> ticketIds, CancellationToken ct = default);
+
+    /// <summary>Available (or expired Reserved) → Reserved, held by <paramref name="bookingId"/> until <paramref name="reservedUntil"/>.</summary>
+    Task<int> TryReserveTicketsAsync(IReadOnlyCollection<Guid> ticketIds, Guid bookingId, DateTime reservedUntil, CancellationToken ct = default);
+
+    /// <summary>Reserved-by-this-booking → Booked (clears the hold). The authoritative oversell gate.</summary>
+    Task<int> TryConfirmTicketsAsync(IReadOnlyCollection<Guid> ticketIds, Guid bookingId, CancellationToken ct = default);
+
+    /// <summary>Reserved-by-this-booking → Available (compensation on payment/confirm failure).</summary>
+    Task<int> ReleaseReservationAsync(IReadOnlyCollection<Guid> ticketIds, Guid bookingId, CancellationToken ct = default);
 }

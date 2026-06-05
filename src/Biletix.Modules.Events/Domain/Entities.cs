@@ -36,5 +36,7 @@ public class Ticket
     public string SeatLabel { get; set; } = default!;
     public decimal Price { get; set; }
     public TicketStatus Status { get; set; } = TicketStatus.Available;
+    public Guid? ReservedBy { get; set; }
+    public DateTime? ReservedUntil { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }
