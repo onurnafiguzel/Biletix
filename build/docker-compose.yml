@@ -16,12 +16,130 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biletix"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
-  redis:
+  # --- Redis Cluster: 3 masters (c1..c3) + 3 replicas (c4..c6) ---
+  # Each node gets a STATIC IP (172.28.0.11..16) so its persisted nodes.conf stays valid
+  # across restarts; cluster-announce-ip makes the node advertise that exact address.
+  # Common settings live in redis-cluster/redis.conf. Ports are NOT published to the host:
+  # cluster redirects (MOVED/ASK) point at 172.28.x.x, unreachable from a Windows host —
+  # inspect via `docker exec biletix-redis-cN redis-cli -c ...` instead.
+  redis-c1:
     image: redis:7-alpine
-    container_name: biletix-redis
-    ports:
-      - "6379:6379"
+    container_name: biletix-redis-c1
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--cluster-announce-ip", "172.28.0.11"]
+    volumes:
+      - ./redis-cluster/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-c1-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      default:
+        ipv4_address: 172.28.0.11
+
+  redis-c2:
+    image: redis:7-alpine
+    container_name: biletix-redis-c2
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--cluster-announce-ip", "172.28.0.12"]
+    volumes:
+      - ./redis-cluster/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-c2-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      default:
+        ipv4_address: 172.28.0.12
+
+  redis-c3:
+    image: redis:7-alpine
+    container_name: biletix-redis-c3
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--cluster-announce-ip", "172.28.0.13"]
+    volumes:
+      - ./redis-cluster/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-c3-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      default:
+        ipv4_address: 172.28.0.13
+
+  redis-c4:
+    image: redis:7-alpine
+    container_name: biletix-redis-c4
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--cluster-announce-ip", "172.28.0.14"]
+    volumes:
+      - ./redis-cluster/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-c4-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      default:
+        ipv4_address: 172.28.0.14
+
+  redis-c5:
+    image: redis:7-alpine
+    container_name: biletix-redis-c5
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--cluster-announce-ip", "172.28.0.15"]
+    volumes:
+      - ./redis-cluster/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-c5-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      default:
+        ipv4_address: 172.28.0.15
+
+  redis-c6:
+    image: redis:7-alpine
+    container_name: biletix-redis-c6
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--cluster-announce-ip", "172.28.0.16"]
+    volumes:
+      - ./redis-cluster/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-c6-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      default:
+        ipv4_address: 172.28.0.16
+
+  # One-shot: waits for all 6 nodes to be healthy, then forms the cluster ONCE
+  # (idempotent — skips if already formed). Exits 0; the API waits for that exit.
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: biletix-redis-init
+    depends_on:
+      redis-c1: { condition: service_healthy }
+      redis-c2: { condition: service_healthy }
+      redis-c3: { condition: service_healthy }
+      redis-c4: { condition: service_healthy }
+      redis-c5: { condition: service_healthy }
+      redis-c6: { condition: service_healthy }
+    volumes:
+      - ./redis-cluster/init-cluster.sh:/init/init-cluster.sh:ro
+    entrypoint: ["sh", "/init/init-cluster.sh"]
+    restart: "no"
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
@@ -95,9 +213,33 @@ services:
       context: ..
       dockerfile: src/Biletix.Api/Dockerfile
     container_name: biletix-api
-    depends_on: [postgres, redis, elasticsearch]
+    depends_on:
+      postgres:
+        condition: service_healthy                  # wait for DB readiness, not just container start
+      elasticsearch:
+        condition: service_started
+      redis-cluster-init:
+        condition: service_completed_successfully   # start only after the cluster is formed
+    environment:
+      # Seed the cluster with the 3 masters; StackExchange.Redis discovers the rest of the
+      # topology. This env overrides appsettings.json ("redis:6379") with no image rebuild.
+      Redis__ConnectionString: "redis-c1:6379,redis-c2:6379,redis-c3:6379"
     ports:
       - "8080:8080"
 
+# Pin the default network's subnet so the cluster nodes can take static IPs.
+# The other services (postgres, kafka, ...) keep getting dynamic IPs from this subnet.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
 volumes:
   pgdata:
+  redis-c1-data:
+  redis-c2-data:
+  redis-c3-data:
+  redis-c4-data:
+  redis-c5-data:
+  redis-c6-data:

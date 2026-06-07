@@ -21,6 +21,10 @@ builder.Services.AddDbContext<AppDbContext>(o =>
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 {
+    // Single node today ("redis:6379"); for a Redis Cluster set Redis:ConnectionString to a comma-
+    // separated seed list ("redis-1:6379,redis-2:6379,redis-3:6379"). ConfigurationOptions.Parse adds
+    // every endpoint and StackExchange.Redis auto-discovers the cluster topology (slot routing + MOVED/
+    // ASK). AbortOnConnectFail=false keeps the lock advisory — a Redis outage must not fail DI/startup.
     var options = ConfigurationOptions.Parse(builder.Configuration["Redis:ConnectionString"] ?? "redis:6379");
     options.AbortOnConnectFail = false;
     return ConnectionMultiplexer.Connect(options);

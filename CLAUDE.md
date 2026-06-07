@@ -15,11 +15,15 @@ Biletix is a Ticketmaster-style ticketing system built as a **modular monolith**
 All runtime services are orchestrated by Docker Compose under `build/`.
 
 ```bash
-# Build + start the whole stack (API, Postgres, Redis, Kafka/Connect/ksqlDB, Elasticsearch)
-cd build && docker compose up -d --build      # API migrations run automatically at startup
+# Build + start the whole stack (API, Postgres, 6-node Redis Cluster, Kafka/Connect/ksqlDB, Elasticsearch)
+cd build && docker compose up -d --build      # API migrations + Redis Cluster bootstrap run automatically
 
 # Register the CDC search pipeline (run ONCE on a fresh cluster, after compose is up)
 cd build && ./register-connectors.sh          # bash; sets REPLICA IDENTITY, Debezium, ksqlDB, ES index + sink
+
+# Inspect the Redis Cluster (see build/redis-cluster/README.md). Use docker exec, not host redis-cli.
+docker exec biletix-redis-c1 redis-cli -c cluster info      # cluster_state:ok + all 16384 slots
+docker exec biletix-redis-c1 redis-cli -c cluster nodes     # 3 masters + 3 replicas
 
 # Compile locally (no services needed)
 dotnet build Biletix.sln
@@ -29,11 +33,14 @@ dotnet ef migrations add <Name> --project src/Biletix.Api
 
 # Overselling load test (needs a seeded event id; works on PowerShell 5.1 and 7)
 pwsh ./scripts/oversell-test.ps1 -EventId <guid>   # or: powershell -File ...
+
+# Redis Cluster failover chaos: kill a master mid-booking; invariant (Booked <= stock) must hold
+powershell -File scripts/redis-cluster-chaos.ps1 -EventId <guid>
 ```
 
 There is **no test project / test framework** in this repo. `scripts/oversell-test.ps1` is the only automated check (a concurrency smoke test, not a unit test). The Postman collection (`postman/`) and README "Smoke Test" section are the manual verification path.
 
-Service ports (host): API **8080**, Postgres 5432, Redis 6379, Kafka 9092, Kafka Connect REST **8085**, ksqlDB 8088, Elasticsearch 9200.
+Service ports (host): API **8080**, Postgres 5432, Kafka 9092, Kafka Connect REST **8085**, ksqlDB 8088, Elasticsearch 9200. The Redis Cluster nodes (`biletix-redis-c1..c6`) are **not** published to the host — inspect them via `docker exec` (see `build/redis-cluster/README.md`).
 
 ## Architecture: the two ideas that drive everything
 
@@ -78,8 +85,10 @@ Single host `Biletix.Api`, single `AppDbContext`, single Postgres. Three modules
 
 ## Gotchas
 
-- **`appsettings.json` uses Docker-network hostnames** (`postgres`, `redis`, `elasticsearch`). To run the API outside Docker, override the connection strings to `localhost`.
+- **`appsettings.json` uses Docker-network hostnames** (`postgres`, `redis`, `elasticsearch`). To run the API outside Docker, override the connection strings to `localhost`. Note `Redis:ConnectionString` in `appsettings.json` stays the single-node default (`redis:6379`); the Docker stack **overrides it** with the cluster seed list via the `Redis__ConnectionString` env var on the `biletix-api` service in `build/docker-compose.yml`.
 - **Enum JSON serialization is numeric.** `TicketStatus` serializes as integers in API responses (`0`=Available, `1`=Reserved, `2`=Booked), not strings — relevant when scripting against the API. All three states are used: the booking flow holds tickets as `Reserved` between reserve and confirm.
 - **ksqlDB output topic must stay named `events`** (equals the ES index name); renaming it breaks the sink.
 - Single-broker Kafka requires `transaction.state.log.replication.factor=1` (already set in `build/docker-compose.yml`) or ksqlDB times out.
 - The Redis lock is advisory only and is released best-effort on every terminal path (and would expire via its 120s TTL anyway). Correctness never depends on it — the DB CAS is the gate.
+- **Redis lock keys are hash-tagged for the cluster:** `{evt:<eventId>}:ticket:<ticketId>` (`TicketLockService.KeysFor`). Redis Cluster hashes only the `{...}` substring, so all of one event's ticket keys land on the same slot/shard — the atomic multi-key Lua stays valid (no `CROSSSLOT`) and an event's lock load is isolated to one shard. The tag is inert on a single node, so the code also runs unchanged outside Docker.
+- **The stack runs a real 6-node Redis Cluster** (3 master + 3 replica), defined in `build/docker-compose.yml` with static IPs `172.28.0.11..16` and bootstrapped by the one-shot `redis-cluster-init` (`build/redis-cluster/`). Nodes are **not** host-published — cluster redirects advertise the internal `172.28.x.x` (`cluster-announce-ip`), unreachable from a Windows host, so inspect via `docker exec biletix-redis-cN redis-cli -c ...`. The lock stays **advisory**: with `AbortOnConnectFail=false` the API starts even while the cluster forms, and a master failover losing locks is harmless because the DB CAS fences. Proof: `scripts/redis-cluster-chaos.ps1` kills a master mid-booking and the oversell invariant holds. Full notes in `build/redis-cluster/README.md`.

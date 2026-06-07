@@ -58,7 +58,7 @@ public static class BookingsEndpoints
             var lockedInRedis = false;
             try
             {
-                lockedInRedis = await locks.TryAcquireAllAsync(ticketIds, bookingId);
+                lockedInRedis = await locks.TryAcquireAllAsync(eventId, ticketIds, bookingId);
                 if (!lockedInRedis)
                     return Results.Conflict(new { error = "ticket(s) locked by another buyer" });
             }
@@ -74,7 +74,7 @@ public static class BookingsEndpoints
                 if (reserved != ticketIds.Count)
                 {
                     await tx.RollbackAsync(ct);                       // undo any partial reservation
-                    await ReleaseRedisAsync(locks, ticketIds, bookingId, lockedInRedis);
+                    await ReleaseRedisAsync(locks, eventId, ticketIds, bookingId, lockedInRedis);
                     return Results.Conflict(new { error = "ticket(s) not available" });
                 }
                 await tx.CommitAsync(ct);                             // durable hold; no DB locks held during payment
@@ -85,7 +85,7 @@ public static class BookingsEndpoints
             if (!paid)
             {
                 await events.ReleaseReservationAsync(ticketIds, bookingId, ct);
-                await ReleaseRedisAsync(locks, ticketIds, bookingId, lockedInRedis);
+                await ReleaseRedisAsync(locks, eventId, ticketIds, bookingId, lockedInRedis);
                 return Results.Problem("payment failed", statusCode: 402);
             }
 
@@ -99,7 +99,7 @@ public static class BookingsEndpoints
                     // The hold expired / was reclaimed during payment → compensate (refund + release).
                     await payments.RefundAsync(req.PaymentDetails, total, ct);
                     await events.ReleaseReservationAsync(ticketIds, bookingId, ct);
-                    await ReleaseRedisAsync(locks, ticketIds, bookingId, lockedInRedis);
+                    await ReleaseRedisAsync(locks, eventId, ticketIds, bookingId, lockedInRedis);
                     return Results.Conflict(new { error = "reservation expired during payment; refunded" });
                 }
 
@@ -116,7 +116,7 @@ public static class BookingsEndpoints
                 await tx.CommitAsync(ct);
             }
 
-            await ReleaseRedisAsync(locks, ticketIds, bookingId, lockedInRedis);
+            await ReleaseRedisAsync(locks, eventId, ticketIds, bookingId, lockedInRedis);
             return Results.Ok(new BookingResponse(bookingId, "Confirmed", total));
         });
 
@@ -124,10 +124,10 @@ public static class BookingsEndpoints
     }
 
     // Best-effort release of the advisory Redis lock; never throws into the request path.
-    private static async Task ReleaseRedisAsync(TicketLockService locks, IReadOnlyCollection<Guid> ticketIds, Guid bookingId, bool acquired)
+    private static async Task ReleaseRedisAsync(TicketLockService locks, Guid eventId, IReadOnlyCollection<Guid> ticketIds, Guid bookingId, bool acquired)
     {
         if (!acquired) return;
-        try { await locks.ReleaseAsync(ticketIds, bookingId); }
+        try { await locks.ReleaseAsync(eventId, ticketIds, bookingId); }
         catch { /* advisory lock — ignore release failures */ }
     }
 }

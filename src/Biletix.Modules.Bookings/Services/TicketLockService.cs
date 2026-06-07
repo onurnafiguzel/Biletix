@@ -39,20 +39,26 @@ return n
 
     public TicketLockService(IConnectionMultiplexer redis) => _redis = redis;
 
+    // All of an event's ticket keys share the {evt:<eventId>} hash-tag so that, on a Redis Cluster,
+    // they hash to the same slot and the multi-key Lua stays atomic (no CROSSSLOT). On a single node
+    // the tag is inert — just part of the string — so the same code runs unchanged today.
+    private static RedisKey[] KeysFor(Guid eventId, IEnumerable<Guid> ticketIds) =>
+        ticketIds.Select(id => (RedisKey)$"{{evt:{eventId}}}:ticket:{id}").ToArray();
+
     /// <summary>
     /// Atomically tries to acquire per-ticket locks via a Redis Lua script.
     /// The check-then-set is executed inside Redis as a single atomic operation,
     /// so no partial state is observable and no rollback path is needed.
-    /// This is the overselling boundary — DB-level locks are not used.
+    /// Advisory only — the authoritative overselling boundary is the DB CAS, not this lock.
     /// </summary>
-    public async Task<bool> TryAcquireAllAsync(IEnumerable<Guid> ticketIds, Guid bookingId)
+    public async Task<bool> TryAcquireAllAsync(Guid eventId, IEnumerable<Guid> ticketIds, Guid bookingId)
     {
         // Advisory fast-path: if Redis is unreachable, don't block the booking — defer to the
         // authoritative DB gate (return "no objection") instead of paying a connect timeout per call.
         if (!_redis.IsConnected) return true;
 
         var db = _redis.GetDatabase();
-        var keys = ticketIds.Select(id => (RedisKey)$"ticket:{id}").ToArray();
+        var keys = KeysFor(eventId, ticketIds);
         if (keys.Length == 0) return true;
 
         var result = (int)await db.ScriptEvaluateAsync(
@@ -63,12 +69,12 @@ return n
         return result == 1;
     }
 
-    public async Task ReleaseAsync(IEnumerable<Guid> ticketIds, Guid bookingId)
+    public async Task ReleaseAsync(Guid eventId, IEnumerable<Guid> ticketIds, Guid bookingId)
     {
         if (!_redis.IsConnected) return;
 
         var db = _redis.GetDatabase();
-        var keys = ticketIds.Select(id => (RedisKey)$"ticket:{id}").ToArray();
+        var keys = KeysFor(eventId, ticketIds);
         if (keys.Length == 0) return;
 
         await db.ScriptEvaluateAsync(
