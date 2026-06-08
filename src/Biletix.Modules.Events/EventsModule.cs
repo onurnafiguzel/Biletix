@@ -7,12 +7,11 @@ namespace Biletix.Modules.Events;
 
 internal class EventsModule(AppDbContext db) : IEventsModule
 {
-    public Task<Event?> GetWithTicketsAsync(Guid eventId, CancellationToken ct = default) =>
-        db.Set<Event>()
-            .Include(e => e.Venue)
-            .Include(e => e.Performer)
-            .Include(e => e.Tickets)
-            .FirstOrDefaultAsync(e => e.Id == eventId, ct);
+    public async Task<IReadOnlyList<Ticket>> GetEventTicketsAsync(Guid eventId, CancellationToken ct = default) =>
+        await db.Set<Ticket>().AsNoTracking()
+            .Where(t => t.EventId == eventId)
+            .OrderBy(t => t.SeatLabel)
+            .ToListAsync(ct);
 
     public async Task<IReadOnlyList<Ticket>> GetTicketsAsync(IEnumerable<Guid> ticketIds, CancellationToken ct = default)
     {

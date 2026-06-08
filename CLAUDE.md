@@ -69,6 +69,7 @@ Postgres WAL → Debezium (Kafka Connect) → Kafka topics → ksqlDB join → `
 - ksqlDB denormalization: `build/ksqldb/search-pipeline.sql` — joins `events`+`performers`+`venues` in **two steps** (ksqlDB forbids two FK-joins in one statement) into a snake_cased topic **named `events` on purpose** (the Confluent ES sink uses the topic name as the index name).
 - ES sink: `build/connectors/elasticsearch-sink.json` (upsert by key, delete on tombstone).
 - The Search module (`src/Biletix.Modules.Search/SearchEndpoints.cs`) only **reads** ES (`multi_match` + fuzzy). Postgres stays the single source of truth; ES is a derived view.
+- **The `events` index also backs the `/events` list read** (BILETIX-3), not just `/search`. The ksqlDB projection carries `venue_id`/`performer_id` so the full `EventDto` is rebuilt from ES; the Events module reaches it through the Shared `IEventCatalogReadModel` (ES-backed `EsEventCatalogReadModel`) to stay decoupled from the ES client. **Reads are split by query shape:** `/events` (list) + `/search` → ES; `/events/{id}` (detail) static catalog → a Redis cache-aside (`EventCatalogCache`, key `event:{id}`, advisory like the lock); only the detail's **volatile per-ticket list** still hits Postgres (its read-model is BILETIX-4).
 
 Kafka Connect is a **custom image** (`build/connect/Dockerfile`) because the stock Debezium image lacks the Confluent ES sink plugin. `docker compose up --build` bakes it in.
 
@@ -76,9 +77,9 @@ Kafka Connect is a **custom image** (`build/connect/Dockerfile`) because the sto
 
 Single host `Biletix.Api`, single `AppDbContext`, single Postgres. Three modules + a shared project:
 
-- `Biletix.Modules.Events` — events, venues, performers, ticket inventory. Exposes the public `IEventsModule` interface.
+- `Biletix.Modules.Events` — events, venues, performers, ticket inventory. Exposes the public `IEventsModule` interface. Reads are CQRS-split: `/events` (list) via `IEventCatalogReadModel` (ES), `/events/{id}` static catalog via `EventCatalogCache` (Redis cache-aside) with tickets from Postgres.
 - `Biletix.Modules.Bookings` — purchase flow, Redis lock, payment. Depends on `Biletix.Modules.Events` and calls `IEventsModule` **directly in-process** (no RabbitMQ/HTTP, no integration events — same transaction).
-- `Biletix.Modules.Search` — read-only ES search. Has no entities.
+- `Biletix.Modules.Search` — read-only ES reads: `/search` plus the `IEventCatalogReadModel` implementation that backs the `/events` list. Has no entities.
 - `Biletix.Shared` — `AppDbContext`, DTOs/contracts (`Contracts/Dtos.cs`).
 
 **Entity configuration discovery:** each module ships its own entities and `IEntityTypeConfiguration<T>` implementations. `AppDbContext.OnModelCreating` (`src/Biletix.Shared/Persistence/AppDbContext.cs`) runs `ApplyConfigurationsFromAssembly` over the module assemblies listed in `Program.cs` (`moduleAssemblies`). **When adding a new module that owns entities, add its assembly to that array in `src/Biletix.Api/Program.cs`** or its configs won't be picked up. Endpoints are wired via `Add*Module()` / `Map*Endpoints()` extension methods, also in `Program.cs`.

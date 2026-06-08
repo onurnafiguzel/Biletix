@@ -15,6 +15,7 @@ public static class EventsEndpoints
     public static IServiceCollection AddEventsModule(this IServiceCollection services)
     {
         services.AddScoped<IEventsModule, EventsModule>();
+        services.AddScoped<EventCatalogCache>();   // BILETIX-3: cache-aside read-model for event detail
         services.AddHostedService<ReservationSweeper>();
         return services;
     }
@@ -23,29 +24,24 @@ public static class EventsEndpoints
     {
         var g = app.MapGroup("/events");
 
-        g.MapGet("/{id:guid}", async (Guid id, IEventsModule mod) =>
+        // Detail: static catalog from the Redis cache-aside read-model; the volatile ticket list
+        // still from the write-model (BILETIX-4 moves live availability to its own read-model).
+        g.MapGet("/{id:guid}", async (Guid id, EventCatalogCache catalog, IEventsModule mod, CancellationToken ct) =>
         {
-            var ev = await mod.GetWithTicketsAsync(id);
+            var ev = await catalog.GetAsync(id, ct);
             if (ev is null) return Results.NotFound();
+            var tickets = await mod.GetEventTicketsAsync(id, ct);
             var dto = new EventDetailsDto(
-                ev.Id, ev.Title, ev.StartsAt, ev.TotalTickets,
-                new VenueDto(ev.Venue.Id, ev.Venue.Name, ev.Venue.City),
-                new PerformerDto(ev.Performer.Id, ev.Performer.Name),
-                ev.Tickets.Select(t => new TicketDto(t.Id, t.SeatLabel, t.Price, t.Status)).ToList());
+                ev.Id, ev.Title, ev.StartsAt, ev.TotalTickets, ev.Venue, ev.Performer,
+                tickets.Select(t => new TicketDto(t.Id, t.SeatLabel, t.Price, t.Status)).ToList());
             return Results.Ok(dto);
         });
 
-        g.MapGet("/", async (AppDbContext db, int pageNumber = 1, int pageSize = 20, bool upcoming = true) =>
+        // List: served from the CDC-fed ES read-model — sort/filter/paginate is a query-engine job,
+        // so the OLTP write-model no longer carries browse load (BILETIX-3).
+        g.MapGet("/", async (IEventCatalogReadModel catalog, CancellationToken ct, int pageNumber = 1, int pageSize = 20, bool upcoming = true) =>
         {
-            var q = db.Set<Event>().AsNoTracking().Include(e => e.Venue).Include(e => e.Performer).AsQueryable();
-            if (upcoming) q = q.Where(e => e.StartsAt >= DateTime.UtcNow);
-            var items = await q
-                .OrderBy(e => e.StartsAt)
-                .Skip((pageNumber - 1) * pageSize).Take(pageSize)
-                .Select(e => new EventDto(e.Id, e.Title, e.StartsAt, e.TotalTickets,
-                    new VenueDto(e.Venue.Id, e.Venue.Name, e.Venue.City),
-                    new PerformerDto(e.Performer.Id, e.Performer.Name)))
-                .ToListAsync();
+            var items = await catalog.ListAsync(pageNumber, pageSize, upcoming, ct);
             return Results.Ok(items);
         });
 

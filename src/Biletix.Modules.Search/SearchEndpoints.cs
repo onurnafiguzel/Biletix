@@ -21,6 +21,8 @@ public static class SearchEndpoints
                     string.Concat(name.Select((c, i) => i > 0 && char.IsUpper(c) ? "_" + char.ToLower(c) : char.ToLower(c).ToString())));
             return new ElasticsearchClient(settings);
         });
+       
+        services.AddScoped<IEventCatalogReadModel, EsEventCatalogReadModel>();
         return services;
     }
 
@@ -79,7 +81,9 @@ public class EsEventDoc
 {
     public Guid Id { get; set; }
     public string? Title { get; set; }
+    public Guid PerformerId { get; set; }
     public string? PerformerName { get; set; }
+    public Guid VenueId { get; set; }
     public string? VenueName { get; set; }
     public string? City { get; set; }
     public DateTime StartsAt { get; set; }

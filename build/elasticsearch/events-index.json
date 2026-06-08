@@ -3,7 +3,9 @@
     "properties": {
       "id":             { "type": "keyword" },
       "title":          { "type": "text" },
+      "performer_id":   { "type": "keyword" },
       "performer_name": { "type": "text" },
+      "venue_id":       { "type": "keyword" },
       "venue_name":     { "type": "text" },
       "city":           { "type": "text" },
       "starts_at":      { "type": "date" },

@@ -66,6 +66,7 @@ CREATE TABLE events_with_performer
     e.starts_at     AS starts_at,
     e.total_tickets AS total_tickets,
     e.venue_id      AS venue_id,
+    e.performer_id  AS performer_id,
     p.name          AS performer_name
   FROM events_tbl e
   JOIN performers_tbl p ON e.performer_id = p.id;
@@ -85,7 +86,9 @@ CREATE TABLE events_enriched
     ep.title          AS `title`,
     ep.starts_at      AS `starts_at`,
     ep.total_tickets  AS `total_tickets`,
+    ep.performer_id   AS `performer_id`,
     ep.performer_name AS `performer_name`,
+    ep.venue_id       AS `venue_id`,
     v.name            AS `venue_name`,
     v.city            AS `city`
   FROM events_with_performer ep

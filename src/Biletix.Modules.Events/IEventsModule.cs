@@ -4,7 +4,7 @@ namespace Biletix.Modules.Events;
 
 public interface IEventsModule
 {
-    Task<Event?> GetWithTicketsAsync(Guid eventId, CancellationToken ct = default);
+    Task<IReadOnlyList<Ticket>> GetEventTicketsAsync(Guid eventId, CancellationToken ct = default);
     Task<IReadOnlyList<Ticket>> GetTicketsAsync(IEnumerable<Guid> ticketIds, CancellationToken ct = default);
 
     /// <summary>Available (or expired Reserved) → Reserved, held by <paramref name="bookingId"/> until <paramref name="reservedUntil"/>.</summary>
